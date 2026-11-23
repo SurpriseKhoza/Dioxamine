@@ -25,8 +25,9 @@ plugins {
 // example on a fork where the repository secrets do not exist, the release
 // build falls back to the debug key so it still builds and installs.
 //
-// Set REQUIRE_RELEASE_SIGNING=true to turn a missing or incomplete
-// configuration into a hard error instead (the official release workflow does).
+// A missing or incomplete configuration is a hard error instead when
+// REQUIRE_RELEASE_SIGNING=true, or when running inside the "Release" GitHub
+// Actions workflow, so an official release can never be debug-signed.
 // -----------------------------------------------------------------------------
 
 val releaseKeystoreFile: File? =
@@ -44,8 +45,12 @@ val hasReleaseSigning: Boolean =
         releaseKeyAlias.isNotEmpty() &&
         releaseKeyPassword.isNotEmpty()
 
+val requireReleaseSigning: Boolean =
+    System.getenv("REQUIRE_RELEASE_SIGNING") == "true" ||
+        System.getenv("GITHUB_WORKFLOW") == "Release"
+
 if (!hasReleaseSigning) {
-    if (System.getenv("REQUIRE_RELEASE_SIGNING") == "true") {
+    if (requireReleaseSigning) {
         throw GradleException(
             "Release signing is required but not fully configured. Set KEYSTORE_PATH " +
                 "(to a non-empty keystore file), RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS " +
