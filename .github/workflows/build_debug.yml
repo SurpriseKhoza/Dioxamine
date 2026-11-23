@@ -5,15 +5,45 @@ on:
     branches: ['**']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   NDK_VERSION: "29.0.14206865"
 
 jobs:
+  config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      variants: ${{ steps.pick.outputs.variants }}
+
+    steps:
+      - name: Choose build variants
+        id: pick
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo 'variants=["debug","release"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'variants=["debug"]' >> "$GITHUB_OUTPUT"
+            echo "::notice::ANDROID_KEYSTORE_BASE64 is not set, so only the debug APK will be built."
+          fi
+
   build:
+    needs: config
+    timeout-minutes: 60
+
     strategy:
       fail-fast: false
       matrix:
-        variant: [debug, release]
+        variant: ${{ fromJSON(needs.config.outputs.variants) }}
 
     runs-on: ubuntu-latest
 
