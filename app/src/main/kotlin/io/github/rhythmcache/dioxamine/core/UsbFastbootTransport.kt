@@ -35,7 +35,7 @@ class AndroidUsbFastbootTransport(
     override fun write(buffer: ByteArray, offset: Int, length: Int) {
         if (isClosed) throw FastbootException.Io("USB transport is closed")
         var bytesWritten = 0
-        val maxChunk = maxOf(outEndpoint.maxPacketSize, 4096)
+        val maxChunk = UsbPacketTransport.alignedChunk(outEndpoint.maxPacketSize)
         while (bytesWritten < length) {
             val chunkSize = minOf(length - bytesWritten, maxChunk)
             val ret = connection.bulkTransfer(outEndpoint, buffer, offset + bytesWritten, chunkSize, timeoutMs)
@@ -56,7 +56,10 @@ class AndroidUsbFastbootTransport(
     }
 
     override fun reset() {
-        // Reset USB interface if needed
+        if (isClosed) return
+        // Recover from a stalled/halted pipe without re-enumerating the device.
+        UsbPacketTransport.clearHalt(connection, inEndpoint)
+        UsbPacketTransport.clearHalt(connection, outEndpoint)
     }
 
     override fun close() {

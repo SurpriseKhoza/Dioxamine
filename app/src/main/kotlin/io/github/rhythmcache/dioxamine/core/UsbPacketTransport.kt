@@ -30,8 +30,9 @@ class UsbPacketTransport(
     private val sendLock = ReentrantLock()
     private val recvLock = ReentrantLock()
 
-    // Read buffer aligned to USB maxPacketSize
-    private val readBuffer = ByteArray(maxOf(inEndpoint.maxPacketSize, 4096))
+    // Read buffer aligned to USB maxPacketSize. 16 KiB matches the usbfs per-URB limit and
+    // gives far better bulk throughput than a single-packet (512 B / 1 KiB) buffer.
+    private val readBuffer = ByteArray(alignedChunk(inEndpoint.maxPacketSize))
     private var readBufferOffset = 0
     private var readBufferLength = 0
 
@@ -63,7 +64,7 @@ class UsbPacketTransport(
 
             if (payloadSize > 0) {
                 var bytesWritten = 0
-                val maxWriteSize = maxOf(outEndpoint.maxPacketSize, 4096)
+                val maxWriteSize = alignedChunk(outEndpoint.maxPacketSize)
                 while (bytesWritten < payloadSize) {
                     if (isClosed) throw AdbException.StreamClosed("USB transport closed during payload write")
                     val chunkSize = minOf(payloadSize - bytesWritten, maxWriteSize)
@@ -186,6 +187,24 @@ class UsbPacketTransport(
     }
 
     companion object {
+        /** usbfs handles at most 16 KiB per URB; larger bulkTransfer calls are split anyway. */
+        const val MAX_BULK_CHUNK = 16 * 1024
+
+        /** Largest chunk <= [MAX_BULK_CHUNK] that is a whole multiple of [maxPacketSize]. */
+        fun alignedChunk(maxPacketSize: Int): Int =
+            if (maxPacketSize <= 0 || maxPacketSize > MAX_BULK_CHUNK) MAX_BULK_CHUNK
+            else (MAX_BULK_CHUNK / maxPacketSize) * maxPacketSize
+
+        /** Sends a standard USB CLEAR_FEATURE(ENDPOINT_HALT) to recover a stalled endpoint. */
+        fun clearHalt(connection: UsbDeviceConnection, endpoint: UsbEndpoint, timeoutMs: Int = 1000): Boolean =
+            connection.controlTransfer(
+                0x02, // host-to-device | standard | recipient: endpoint
+                0x01, // CLEAR_FEATURE
+                0x00, // ENDPOINT_HALT
+                endpoint.address,
+                null, 0, timeoutMs,
+            ) >= 0
+
         val ADB_INTERFACE_MATCHER = UsbInterfaceMatcher(0xFF, 0x42, 0x01)
 
         /**
