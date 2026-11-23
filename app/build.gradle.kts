@@ -17,18 +17,57 @@ plugins {
     alias(libs.plugins.ktlint)
 }
 
+// -----------------------------------------------------------------------------
+// Release signing
+//
+// The release key is only used when a complete keystore configuration is
+// available (CI secrets or local environment variables). Without one, for
+// example on a fork where the repository secrets do not exist, the release
+// build falls back to the debug key so it still builds and installs.
+//
+// Set REQUIRE_RELEASE_SIGNING=true to turn a missing or incomplete
+// configuration into a hard error instead (the official release workflow does).
+// -----------------------------------------------------------------------------
+
+val releaseKeystoreFile: File? =
+    System
+        .getenv("KEYSTORE_PATH")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { rootProject.file(it) }
+val releaseStorePassword: String = System.getenv("RELEASE_STORE_PASSWORD").orEmpty()
+val releaseKeyAlias: String = System.getenv("RELEASE_KEY_ALIAS").orEmpty()
+val releaseKeyPassword: String = System.getenv("RELEASE_KEY_PASSWORD").orEmpty()
+
+val hasReleaseSigning: Boolean =
+    releaseKeystoreFile?.let { it.isFile && it.length() > 0L } == true &&
+        releaseStorePassword.isNotEmpty() &&
+        releaseKeyAlias.isNotEmpty() &&
+        releaseKeyPassword.isNotEmpty()
+
+if (!hasReleaseSigning) {
+    if (System.getenv("REQUIRE_RELEASE_SIGNING") == "true") {
+        throw GradleException(
+            "Release signing is required but not fully configured. Set KEYSTORE_PATH " +
+                "(to a non-empty keystore file), RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS " +
+                "and RELEASE_KEY_PASSWORD.",
+        )
+    }
+    logger.warn(
+        "Release keystore not fully configured: the release build will be signed with the debug key.",
+    )
+}
+
 android {
     namespace = "io.github.rhythmcache.dioxamine"
     compileSdk = 37
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH")
-            if (keystorePath != null) {
-                storeFile = rootProject.file(keystorePath)
-                storePassword = System.getenv("RELEASE_STORE_PASSWORD")
-                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
-                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            if (hasReleaseSigning) {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -82,7 +121,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig =
+                signingConfigs.getByName(
+                    if (hasReleaseSigning) "release" else "debug",
+                )
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
