@@ -30,8 +30,11 @@ class UsbPacketTransport(
     private val sendLock = ReentrantLock()
     private val recvLock = ReentrantLock()
 
-    // Read buffer aligned to USB maxPacketSize
-    private val readBuffer = ByteArray(maxOf(inEndpoint.maxPacketSize, 4096))
+    // Largest packet-aligned request Android's usbfs accepts in a single bulkTransfer() call.
+    private val writeChunkSize = UsbTransfer.alignedChunkSize(outEndpoint.maxPacketSize)
+
+    // Read buffer sized to the largest packet-aligned usbfs request (fewer syscalls per payload).
+    private val readBuffer = ByteArray(UsbTransfer.alignedChunkSize(inEndpoint.maxPacketSize))
     private var readBufferOffset = 0
     private var readBufferLength = 0
 
@@ -63,10 +66,9 @@ class UsbPacketTransport(
 
             if (payloadSize > 0) {
                 var bytesWritten = 0
-                val maxWriteSize = maxOf(outEndpoint.maxPacketSize, 4096)
                 while (bytesWritten < payloadSize) {
                     if (isClosed) throw AdbException.StreamClosed("USB transport closed during payload write")
-                    val chunkSize = minOf(payloadSize - bytesWritten, maxWriteSize)
+                    val chunkSize = minOf(payloadSize - bytesWritten, writeChunkSize)
                     val ret = connection.bulkTransfer(
                         outEndpoint,
                         pkt.payload,
@@ -137,21 +139,30 @@ class UsbPacketTransport(
     /**
      * Reads one chunk from the USB IN endpoint into [buffer].
      * Returns the number of bytes copied, or -1 if the underlying bulkTransfer
-     * timed out or returned an ambiguous non-positive result (no real data).
+     * timed out or failed (no real data).
      */
     private fun readChunk(buffer: ByteArray, offset: Int, length: Int): Int {
         if (readBufferOffset >= readBufferLength) {
-            val maxReadSize = readBuffer.size
-            val ret = connection.bulkTransfer(inEndpoint, readBuffer, 0, maxReadSize, timeoutMs)
-            if (ret <= 0) {
-                // Ambiguous on Android's API: could be a plain idle timeout (completely normal
-                // when no ADB traffic is flowing) or a genuine pipe/device error. We can't tell
-                // them apart here, so we surface it as -1 and let readExact() decide, based on
-                // whether we're at a safe retry point (start of a fresh packet) or not.
+            var zlpCount = 0
+            while (true) {
+                val ret = connection.bulkTransfer(inEndpoint, readBuffer, 0, readBuffer.size, timeoutMs)
+                if (ret > 0) {
+                    readBufferOffset = 0
+                    readBufferLength = ret
+                    break
+                }
+                // ret == 0 is a zero-length packet: the device terminated a transfer that ended
+                // on a packet boundary. It carries no data, so skip it and keep waiting for the
+                // real bytes instead of treating it as a failure (bounded, so a misbehaving
+                // device cannot make us spin forever).
+                if (ret == 0 && ++zlpCount <= UsbTransfer.MAX_CONSECUTIVE_ZLP) continue
+
+                // ret < 0: Ambiguous on Android's API: could be a plain idle timeout (completely
+                // normal when no ADB traffic is flowing) or a genuine pipe/device error. We can't
+                // tell them apart here, so we surface it as -1 and let readExact() decide, based
+                // on whether we're at a safe retry point (start of a fresh packet) or not.
                 return -1
             }
-            readBufferOffset = 0
-            readBufferLength = ret
         }
         val bytesToCopy = minOf(length, readBufferLength - readBufferOffset)
         System.arraycopy(readBuffer, readBufferOffset, buffer, offset, bytesToCopy)
