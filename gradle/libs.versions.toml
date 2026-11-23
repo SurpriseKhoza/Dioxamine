@@ -17,7 +17,7 @@ datastore         = "1.2.1"
 webkit            = "1.17.1"
 ktlint            = "14.0.1"
 okio              = "3.18.2"
-bouncycastle      = "1.85.2"
+bouncycastle      = "1.85"
 spake2            = "v1.0.2"
 
 [libraries]
