@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Branding overlay: the app is called XDroid. Keep identical in src/debug and src/release. -->
+    <string name="app_name">XDroid</string>
+    <string name="local_adb_detected_msg">XDroid ने पता लगाया कि पोर्ट %1$d पर लोकल वायरलेस ADB सक्रिय है। क्या आप इस डिवाइस से कनेक्ट करना चाहेंगे?</string>
+    <string name="notification_channel_keep_alive_desc">जब तक XDroid बैकग्राउंड में सक्रिय रखा जाता है, तब तक दिखाई जाने वाली सूचना</string>
+    <string name="notification_keep_alive_title">XDroid Keep Alive</string>
+    <string name="notification_keep_alive_text">XDroid बैकग्राउंड में सक्रिय है</string>
+</resources>
