@@ -55,12 +55,13 @@
 # -----------------------------------------------------------------------------
 # Enums persisted or compared by name
 #
-# PluginPermission / PermissionPolicy are stored in SharedPreferences through
-# name() and read back through valueOf()/string matching, so their constants must
-# never be renamed or removed, otherwise saved permission choices would be lost
-# or misread after an update.
+# AppTheme ("theme_mode"), PluginPermission and PermissionPolicy are stored in
+# SharedPreferences through name() and read back through valueOf()/string
+# matching, so their constants must never be renamed or removed, otherwise saved
+# settings would be lost or misread after an update. Enums from the adb-kt,
+# fastboot-kt and app-logger modules (io.github.rhythmcache.*) are included too.
 # -----------------------------------------------------------------------------
--keepclassmembers enum io.github.rhythmcache.dioxamine.** {
+-keepclassmembers enum io.github.rhythmcache.** {
     <fields>;
     public static **[] values();
     public static ** valueOf(java.lang.String);
