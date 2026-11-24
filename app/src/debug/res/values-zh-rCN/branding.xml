@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Branding overlay: the app is called XDroid. Keep identical in src/debug and src/release. -->
+    <string name="app_name">XDroid</string>
+    <string name="local_adb_detected_msg">XDroid 检测到本地无线 ADB 已在端口 %1$d 上启用。是否要连接到此设备？</string>
+    <string name="notification_channel_keep_alive_desc">XDroid 在后台保持运行时显示的通知</string>
+    <string name="notification_keep_alive_title">XDroid Keep Alive</string>
+    <string name="notification_keep_alive_text">XDroid 正在后台运行</string>
+</resources>
