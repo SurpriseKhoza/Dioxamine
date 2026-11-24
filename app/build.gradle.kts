@@ -2,6 +2,7 @@ import com.android.build.api.variant.ApplicationAndroidComponentsExtension
 import org.gradle.process.ExecOperations
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
+import java.security.MessageDigest
 import java.util.Calendar
 import javax.inject.Inject
 
@@ -288,7 +289,7 @@ fun sha256Of(
     files: List<File>,
     extra: String,
 ): String {
-    val md = java.security.MessageDigest.getInstance("SHA-256")
+    val md = MessageDigest.getInstance("SHA-256")
     md.update(extra.toByteArray())
     val buffer = ByteArray(64 * 1024)
     files.sortedBy { it.path }.forEach { file ->
@@ -302,7 +303,7 @@ fun sha256Of(
             }
         }
     }
-    return md.digest().joinToString("") { "%02x".format(it) }
+    return md.digest().joinToString("") { b -> "%02x".format(b) }
 }
 
 fun isAssetUpToDate(
