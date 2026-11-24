@@ -17,18 +17,62 @@ plugins {
     alias(libs.plugins.ktlint)
 }
 
+// -----------------------------------------------------------------------------
+// Release signing
+//
+// The release key is only used when a complete keystore configuration is
+// available (CI secrets or local environment variables). Without one, for
+// example on a fork where the repository secrets do not exist, the release
+// build falls back to the debug key so it still builds and installs.
+//
+// A missing or incomplete configuration is a hard error instead when
+// REQUIRE_RELEASE_SIGNING=true, or when running inside the "Release" GitHub
+// Actions workflow, so an official release can never be debug-signed.
+// -----------------------------------------------------------------------------
+
+val releaseKeystoreFile: File? =
+    System
+        .getenv("KEYSTORE_PATH")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { rootProject.file(it) }
+val releaseStorePassword: String = System.getenv("RELEASE_STORE_PASSWORD").orEmpty()
+val releaseKeyAlias: String = System.getenv("RELEASE_KEY_ALIAS").orEmpty()
+val releaseKeyPassword: String = System.getenv("RELEASE_KEY_PASSWORD").orEmpty()
+
+val hasReleaseSigning: Boolean =
+    releaseKeystoreFile?.let { it.isFile && it.length() > 0L } == true &&
+        releaseStorePassword.isNotEmpty() &&
+        releaseKeyAlias.isNotEmpty() &&
+        releaseKeyPassword.isNotEmpty()
+
+val requireReleaseSigning: Boolean =
+    System.getenv("REQUIRE_RELEASE_SIGNING") == "true" ||
+        System.getenv("GITHUB_WORKFLOW") == "Release"
+
+if (!hasReleaseSigning) {
+    if (requireReleaseSigning) {
+        throw GradleException(
+            "Release signing is required but not fully configured. Set KEYSTORE_PATH " +
+                "(to a non-empty keystore file), RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS " +
+                "and RELEASE_KEY_PASSWORD.",
+        )
+    }
+    logger.warn(
+        "Release keystore not fully configured: the release build will be signed with the debug key.",
+    )
+}
+
 android {
     namespace = "io.github.rhythmcache.dioxamine"
     compileSdk = 37
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH")
-            if (keystorePath != null) {
-                storeFile = rootProject.file(keystorePath)
-                storePassword = System.getenv("RELEASE_STORE_PASSWORD")
-                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
-                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            if (hasReleaseSigning) {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -82,7 +126,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig =
+                signingConfigs.getByName(
+                    if (hasReleaseSigning) "release" else "debug",
+                )
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -218,12 +265,164 @@ fun findAndroidJar(
 }
 
 // -----------------------------------------------------------------------------
+// Skip regenerating assets that are already up to date.
+//
+// Each generated asset has a stamp file under build/asset-stamps/ holding a
+// digest of everything that feeds it (sources plus a fingerprint of the JDK,
+// SDK and NDK). A step is skipped only when the stamp matches AND every output
+// file exists. Any problem while checking counts as "not up to date", so the
+// worst case is the old behaviour: regenerate every time.
+//
+// Force a regeneration with FORCE_ASSETS=1 or -PforceAssets.
+// -----------------------------------------------------------------------------
+
+val assetStampDir = layout.buildDirectory.dir("asset-stamps")
+
+val forceAssets: Boolean =
+    System.getenv("FORCE_ASSETS") == "1" || project.hasProperty("forceAssets")
+
+fun stampFile(name: String): File = assetStampDir.get().file(name).asFile
+
+fun sha256Of(
+    baseDir: File,
+    files: List<File>,
+    extra: String,
+): String {
+    val md = java.security.MessageDigest.getInstance("SHA-256")
+    md.update(extra.toByteArray())
+    val buffer = ByteArray(64 * 1024)
+    files.sortedBy { it.path }.forEach { file ->
+        md.update(file.relativeToOrSelf(baseDir).path.replace('\\', '/').toByteArray())
+        md.update(file.length().toString().toByteArray())
+        file.inputStream().use { input ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                md.update(buffer, 0, read)
+            }
+        }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
+fun isAssetUpToDate(
+    stamp: File,
+    outputs: List<File>,
+    digest: () -> String,
+): Boolean =
+    try {
+        !forceAssets &&
+            outputs.all { it.isFile && it.length() > 0L } &&
+            stamp.isFile &&
+            stamp.readText().trim() == digest()
+    } catch (e: Exception) {
+        false
+    }
+
+fun writeAssetStamp(
+    stamp: File,
+    digest: () -> String,
+) {
+    try {
+        stamp.parentFile.mkdirs()
+        stamp.writeText(digest())
+    } catch (e: Exception) {
+        // Without a stamp the next build simply regenerates the asset.
+    }
+}
+
+fun toolchainFingerprintOf(
+    sdkDir: File,
+    compileSdk: Int?,
+): String {
+    fun names(dir: File): String =
+        dir
+            .listFiles()
+            ?.map { it.name }
+            ?.sorted()
+            ?.joinToString(",")
+            .orEmpty()
+
+    val ndkEnv =
+        listOf("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK")
+            .joinToString(",") { System.getenv(it).orEmpty() }
+
+    return listOf(
+        "java=" + System.getProperty("java.version"),
+        "compileSdk=$compileSdk",
+        "platforms=" + names(sdkDir.resolve("platforms")),
+        "build-tools=" + names(sdkDir.resolve("build-tools")),
+        "ndk=" + names(sdkDir.resolve("ndk")),
+        "ndkEnv=$ndkEnv",
+    ).joinToString("|")
+}
+
+val toolchainFingerprint: Lazy<String> =
+    lazy {
+        toolchainFingerprintOf(
+            androidComponents.sdkComponents.sdkDirectory
+                .get()
+                .asFile,
+            android.compileSdk,
+        )
+    }
+
+// Bump these if the way an asset is produced changes without its inputs changing.
+val scrcpyRecipe = "scrcpy-v1"
+val agentRecipe = "agent-v1"
+val dxlsRecipe = "dxls-v1:-O2 -fPIE -pie:api21"
+
+val scrcpyJarFile: File = assetsDir.file("scrcpy-server.jar").asFile
+val agentJarFile: File = assetsDir.file("diox-agent.jar").asFile
+val dxlsOutputFiles: List<File> =
+    listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        .map { assetsDir.dir("dxls").file("dxls-$it").asFile }
+
+val scrcpyDigest: Lazy<String> =
+    lazy {
+        val skipDirs = setOf("build", ".git", ".gradle")
+        val files =
+            scrcpyDir
+                .walkTopDown()
+                .onEnter { it.name !in skipDirs }
+                .filter { it.isFile && it.name != ".git" }
+                .toList()
+        sha256Of(scrcpyDir, files, scrcpyRecipe + "|" + toolchainFingerprint.value)
+    }
+
+val agentDigest: Lazy<String> =
+    lazy {
+        val files =
+            rootProject
+                .file("src_ext/stub")
+                .walkTopDown()
+                .filter { it.isFile }
+                .toList() + listOf(rootProject.file("src_ext/DioxAgent.java")).filter { it.isFile }
+        sha256Of(rootProject.projectDir, files, agentRecipe + "|" + toolchainFingerprint.value)
+    }
+
+// Evaluated once, before any step of the agent chain has run.
+val agentUpToDate: Lazy<Boolean> =
+    lazy {
+        isAssetUpToDate(stampFile("diox-agent.stamp"), listOf(agentJarFile)) { agentDigest.value }
+    }
+
+val dxlsDigest: Lazy<String> =
+    lazy {
+        val files = listOf(rootProject.file("src_ext/dxls.c")).filter { it.isFile }
+        sha256Of(rootProject.projectDir, files, dxlsRecipe + "|" + toolchainFingerprint.value)
+    }
+
+// -----------------------------------------------------------------------------
 // Build scrcpy-server.jar from the submodule.
 // -----------------------------------------------------------------------------
 
 val buildScrcpyServer =
     tasks.register<GradleBuild>("buildScrcpyServer") {
         onlyIf { scrcpyDir.exists() && scrcpyDir.resolve("server").exists() }
+        onlyIf {
+            !isAssetUpToDate(stampFile("scrcpy-server.stamp"), listOf(scrcpyJarFile)) { scrcpyDigest.value }
+        }
 
         dir = scrcpyDir
         tasks = listOf("server:assembleRelease")
@@ -243,6 +442,8 @@ val buildScrcpyServer =
 
             dest.parentFile.mkdirs()
             built.copyTo(dest, overwrite = true)
+
+            writeAssetStamp(stampFile("scrcpy-server.stamp")) { scrcpyDigest.value }
 
             logger.lifecycle("scrcpy-server.jar -> $dest")
         }
@@ -278,6 +479,7 @@ val dioxAgentDexDir =
 
 val compileDioxAgentStub =
     tasks.register<JavaExec>("compileDioxAgentStub") {
+        onlyIf { !agentUpToDate.value }
 
         // Use javac from the same JDK running Gradle.
         mainClass.set("com.sun.tools.javac.Main")
@@ -343,6 +545,7 @@ val compileDioxAgentStub =
 val jarDioxAgentStub =
     tasks.register<Exec>("jarDioxAgentStub") {
         dependsOn(compileDioxAgentStub)
+        onlyIf { !agentUpToDate.value }
 
         val stubJarFile =
             layout.buildDirectory.file("dioxagent-stub.jar")
@@ -394,6 +597,7 @@ val jarDioxAgentStub =
 val compileDioxAgentJava =
     tasks.register<JavaExec>("compileDioxAgentJava") {
         dependsOn(jarDioxAgentStub)
+        onlyIf { !agentUpToDate.value }
 
         // Same JDK as Gradle.
         mainClass.set("com.sun.tools.javac.Main")
@@ -451,6 +655,7 @@ val compileDioxAgentJava =
 val dexDioxAgent =
     tasks.register<Exec>("dexDioxAgent") {
         dependsOn(compileDioxAgentJava)
+        onlyIf { !agentUpToDate.value }
 
         doFirst {
             val classesDir =
@@ -534,6 +739,8 @@ val dexDioxAgent =
             // Remove legacy pkg-dump.jar if present
             assetsDir.file("pkg-dump.jar").asFile.delete()
 
+            writeAssetStamp(stampFile("diox-agent.stamp")) { agentDigest.value }
+
             logger.lifecycle("diox-agent.jar -> $dest")
         }
     }
@@ -553,6 +760,9 @@ val buildDxlsNative =
             val sdkDir = androidComponents.sdkComponents.sdkDirectory.get().asFile
             val ndkParent = sdkDir.resolve("ndk")
             ndkParent.listFiles()?.any { it.resolve("toolchains/llvm/prebuilt").exists() } == true
+        }
+        onlyIf {
+            !isAssetUpToDate(stampFile("dxls.stamp"), dxlsOutputFiles) { dxlsDigest.value }
         }
 
         val execOps =
@@ -721,6 +931,8 @@ val buildDxlsNative =
 
                 logger.lifecycle("$arch dxls built")
             }
+
+            writeAssetStamp(stampFile("dxls.stamp")) { dxlsDigest.value }
         }
     }
 
