@@ -92,7 +92,7 @@ class AdbSyncSession internal constructor(
                     stat
                 }
                 "FAIL" -> {
-                    val len = leInt(readExactly(stream, 4))
+                    val len = checkSyncLength("FAIL", leInt(readExactly(stream, 4)))
                     val msg = readExactly(stream, len).toString(Charsets.UTF_8)
                     throw AdbException.RemoteFailure("Sync stat failed: $msg")
                 }
@@ -109,7 +109,8 @@ class AdbSyncSession internal constructor(
         sendReq(stream, "RECV", remotePath.toByteArray(Charsets.UTF_8))
         val carry = Buffer()
         var totalDone = 0L
-        val tmp = ByteArray(8192)
+        // One full sync DATA block per copy: fewer write() calls and progress callbacks than 8 KiB steps.
+        val tmp = ByteArray(SYNC_DATA_MAX)
         while (true) {
             while (carry.size < 8) {
                 val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF during sync pull")
@@ -120,6 +121,7 @@ class AdbSyncSession internal constructor(
             when (id) {
                 "DONE" -> return@withLock
                 "FAIL" -> {
+                    checkSyncLength(id, len)
                     while (carry.size < len) {
                         val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF while reading FAIL message")
                         carry.write(chunk)
@@ -128,6 +130,9 @@ class AdbSyncSession internal constructor(
                     throw AdbException.RemoteFailure("Sync pull failed: $msg")
                 }
                 "DATA" -> {
+                    // A negative or oversized length would otherwise either desync the stream
+                    // silently or make us buffer an unbounded amount of data in memory.
+                    checkSyncLength(id, len)
                     while (carry.size < len) {
                         val chunk = stream.recv() ?: throw AdbException.Protocol("Unexpected EOF in sync DATA block")
                         carry.write(chunk)
@@ -166,7 +171,7 @@ class AdbSyncSession internal constructor(
         val destArg = "$remotePath,$mode".toByteArray(Charsets.UTF_8)
         sendReq(stream, "SEND", destArg)
 
-        val buffer = ByteArray(64 * 1024)
+        val buffer = ByteArray(SYNC_DATA_MAX)
         var bytesRead: Int
         var totalDone = 0L
         while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -183,7 +188,7 @@ class AdbSyncSession internal constructor(
         val len = respBuf.readIntLe()
         when (id) {
             "FAIL" -> {
-                val msg = readExactly(stream, len).toString(Charsets.UTF_8)
+                val msg = readExactly(stream, checkSyncLength(id, len)).toString(Charsets.UTF_8)
                 throw AdbException.RemoteFailure("Sync push failed: $msg")
             }
             "OKAY" -> Unit
@@ -268,6 +273,20 @@ class AdbSyncSession internal constructor(
         return buf
     }
 
+    /**
+     * The sync protocol caps a single DATA block (and any FAIL message) at [SYNC_DATA_MAX] bytes.
+     * Anything outside 0..[SYNC_DATA_MAX] is a protocol violation, not data we should trust.
+     */
+    private fun checkSyncLength(
+        id: String,
+        len: Int,
+    ): Int {
+        if (len < 0 || len > SYNC_DATA_MAX) {
+            throw AdbException.Protocol("Invalid sync $id length: $len")
+        }
+        return len
+    }
+
     private fun leInt(
         b: ByteArray,
         offset: Int = 0,
@@ -303,6 +322,9 @@ class AdbSyncSession internal constructor(
 
     companion object {
         private val EMPTY = ByteArray(0)
+
+        /** Maximum payload of one sync DATA block (SYNC_DATA_MAX in AOSP adb). */
+        private const val SYNC_DATA_MAX = 64 * 1024
     }
 }
 
