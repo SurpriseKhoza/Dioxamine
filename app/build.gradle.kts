@@ -92,7 +92,7 @@ android {
 
         val currentYear = Calendar.getInstance().get(Calendar.YEAR).toString()
 
-        buildConfigField("String", "APP_NAME", "\"Dioxamine\"")
+        buildConfigField("String", "APP_NAME", "\"XDroid\"")
         buildConfigField("String", "AUTHOR", "\"rhythmcache\"")
         buildConfigField("String", "COPYRIGHT_YEAR", "\"$currentYear\"")
         buildConfigField("String", "GITHUB_URL", "\"https://github.com/rhythmcache/\"")
