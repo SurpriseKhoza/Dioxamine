@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Branding overlay: the app is called XDroid. Keep identical in src/debug and src/release. -->
+    <string name="app_name">XDroid</string>
+    <string name="local_adb_detected_msg">XDroid detectó que ADB inalámbrico local está activo en el puerto %1$d. ¿Quieres conectarte a este dispositivo?</string>
+    <string name="notification_channel_keep_alive_desc">Notificación que se muestra mientras XDroid se mantiene activo en segundo plano</string>
+    <string name="notification_keep_alive_title">XDroid Keep Alive</string>
+    <string name="notification_keep_alive_text">XDroid está activo en segundo plano</string>
+</resources>
