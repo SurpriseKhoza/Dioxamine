@@ -51,6 +51,19 @@ class DioxForegroundService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Android 15+ limits dataSync foreground services to about 6 hours per 24 hours and calls this
+     * when that budget is used up. The service must stop itself right away, otherwise the system
+     * throws a RemoteServiceException and kills the whole app.
+     *
+     * The "keep alive" preference is left on, so the user's choice survives and the service can be
+     * started again the next time the app is opened.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        AppLogger.i("DioxForegroundService", "Foreground service time limit reached (type=$fgsType), stopping")
+        stopKeepAlive(disablePreference = false)
+    }
+
     private fun handleStart() {
         isRunning = true
         val notification = buildNotification()
@@ -69,6 +82,10 @@ class DioxForegroundService : Service() {
         }.onFailure { e ->
             AppLogger.e("DioxForegroundService", "Failed to start foreground service", e)
             isRunning = false
+            // A service started with startForegroundService() that never reaches the foreground
+            // is killed by the system with a "did not call startForeground in time" error.
+            // Stop it cleanly instead of leaving it half-started.
+            stopSelf()
             return
         }
 
@@ -76,14 +93,21 @@ class DioxForegroundService : Service() {
     }
 
     private fun handleStop() {
+        // Stopped directly via the notification action or the app: the user turned Keep Alive off.
+        stopKeepAlive(disablePreference = true)
+    }
+
+    private fun stopKeepAlive(disablePreference: Boolean) {
         releaseWakeLock()
         isRunning = false
 
-        // Update preference if stopped directly via notification action
-        getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean("keep_alive_enabled", false)
-            .apply()
+        if (disablePreference) {
+            // Update preference if stopped directly via notification action
+            getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("keep_alive_enabled", false)
+                .apply()
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
